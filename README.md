@@ -1,5 +1,5 @@
 # Spis treści
-- [Uruchomienie] (#uruchomienie)
+- [Uruchomienie](#uruchomienie)
 - [Autoryzacja](#autoryzacja)
 - [Zarządzanie użytkownikami](#zarządzanie-użytkownikami)
 - [Zarządzanie zadaniami](#zarządzanie-zadaniami)
@@ -9,22 +9,22 @@
 ## Uruchomienie
 #### 1.Budowanie projektu
 ```sh
-    docker-compose up --build
+docker-compose up --build
 ```
 ### 1.1 Jeżeli projekt budowany jest pierwszy raz, po uruchomieniu bazy danych należy wywołać
 ```sh
-    docker exec -it backend python manage.py makemigrations                                          
-    docker exec -it backend python manage.py migrate
+docker exec -it backend python manage.py makemigrations                                          
+docker exec -it backend python manage.py migrate
 ```
 ### 2. Aplikacja jest uruchomiona
 Dostęp do poglądowego frontendu 
 ```sh
-    http://0.0.0.0:8501
+http://0.0.0.0:8501
 ```
 
 Dostęp do django
 ```
-    http://localhost:8000/
+http://localhost:8000/
 ```
 
 ## Autoryzacja
