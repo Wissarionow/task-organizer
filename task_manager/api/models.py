@@ -15,7 +15,7 @@ class Task(models.Model):
     name = models.CharField(max_length=100)
     description = models.TextField()
     status = models.CharField(
-        max_length=20,
+        max_length=11,
         choices=STATUS_CHOICES,
         default=NEW,
     )
@@ -33,8 +33,7 @@ class Task(models.Model):
         return f"{self.name} {self.id}"
 
 class TaskHistory(models.Model):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE)
-    task_id = models.IntegerField()
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, null=True, blank=True)
     name = models.CharField(max_length=100)
     description = models.TextField()
     assigned_user = models.ForeignKey(

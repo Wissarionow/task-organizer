@@ -1,50 +1,56 @@
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.views import APIView
+from rest_framework.generics import (
+    ListAPIView,
+    CreateAPIView,
+    RetrieveAPIView
+)
 from rest_framework.response import Response
-from django.contrib.auth.hashers import check_password, make_password
 from rest_framework import status
-from .models import Task, User, TaskHistory
-from .serializer import TaskSerializer, UserSerializer
+from django.contrib.auth.hashers import check_password
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q
 from django.core.exceptions import ObjectDoesNotExist
+from .models import Task, User, TaskHistory
+from .serializer import TaskSerializer, UserSerializer
 
-##############
-####TASK######
-##############
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def get_user_tasks(request, user_id):
-    try:
-        tasks = Task.objects.filter(assigned_user=user_id)
-        serializer = TaskSerializer(tasks, many=True)
-        return Response(serializer.data)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+# ===== TASK VIEWS =====
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def create_task(request):
-    try:
-        request.data['created_at'] = timezone.now()
-        serializer = TaskSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+class UserTaskListView(ListAPIView):
+    """
+    Zwraca listę zadań przypisanych do konkretnego użytkownika.
+    """
+    permission_classes = [AllowAny]
+    serializer_class = TaskSerializer
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def get_task_history(request, task_id):
-    try:
+    def get_queryset(self):
+        user_id = self.kwargs.get('user_id')
+        return Task.objects.filter(assigned_user=user_id)
+
+
+class TaskCreateView(CreateAPIView):
+    """
+    Tworzy nowe zadanie.
+    """
+    permission_classes = [IsAuthenticated]
+    queryset = Task.objects.all()
+    serializer_class = TaskSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(created_at=timezone.now())
+
+
+class TaskHistoryView(APIView):
+    """
+    Zwraca historię zmian danego zadania.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, task_id):
         task_history = TaskHistory.objects.filter(task_id=task_id).order_by('-updated_at')
-        
         if not task_history.exists():
             return Response({"message": "No history found for this task"}, status=status.HTTP_404_NOT_FOUND)
-
         history_data = []
         for entry in task_history:
             history_data.append({
@@ -55,129 +61,143 @@ def get_task_history(request, task_id):
                 "updated_at": entry.updated_at,
                 "deleted_at": entry.deleted_at
             })
-
         return Response(history_data, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def filter_tasks(request):
-    try:
-        status = request.GET.get('status', None)
-        keyword = request.GET.get('keyword', None)
-        assigned_user = request.GET.get('assigned_user', None)
 
-        tasks = Task.objects.all()
+class TaskFilterView(ListAPIView):
+    """
+    Zwraca listę zadań z możliwością filtrowania według statusu, słowa kluczowego lub przypisanego użytkownika.
+    """
+    permission_classes = [AllowAny]
+    serializer_class = TaskSerializer
 
-        if status:
-            tasks = tasks.filter(status=status.upper())
-
+    def get_queryset(self):
+        qs = Task.objects.all()
+        status_param = self.request.query_params.get('status')
+        keyword = self.request.query_params.get('keyword')
+        assigned_user = self.request.query_params.get('assigned_user')
+        if status_param:
+            qs = qs.filter(status=status_param.upper())
         if keyword:
-            tasks = tasks.filter(
-                Q(description__icontains=keyword) | Q(name__icontains=keyword)
-            )
-
+            qs = qs.filter(Q(description__icontains=keyword) | Q(name__icontains=keyword))
         if assigned_user:
-            tasks = tasks.filter(assigned_user=assigned_user)
-        
-        serializer = TaskSerializer(tasks, many=True)
-        return Response(serializer.data)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            qs = qs.filter(assigned_user=assigned_user)
+        return qs
 
-@api_view(['PUT','POST','DELETE'])
-@permission_classes([IsAuthenticated])
-def edit_task(request, task_id):
-    try:
-        task = Task.objects.get(id=task_id)
+
+class TaskEditView(APIView):
+    """
+    Pozwala na aktualizację (PUT/POST) oraz usunięcie (DELETE) zadania.
+    Przed aktualizacją/usunięciem dodaje wpis do historii.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, task_id):
+        try:
+            task = Task.objects.get(id=task_id)
+        except Task.DoesNotExist:
+            return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
         
-        #add to history
+        # Dodajemy wpis do historii przed aktualizacją
         TaskHistory.objects.create(
             task_id=task.id,
             name=task.name,
             description=task.description,
             assigned_user=task.assigned_user,
             created_at=task.created_at,
-            updated_at=timezone.now(),
+            updated_at=timezone.now()
         )
+        serializer = TaskSerializer(task, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def delete(self, request, task_id):
+        try:
+            task = Task.objects.get(id=task_id)
+        except Task.DoesNotExist:
+            return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
         
-        if request.method == 'DELETE':
-            task.delete()
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        else:
-            serializer = TaskSerializer(instance=task, data=request.data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response(serializer.data)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    except ObjectDoesNotExist:
-        return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
-def delete_task(request, task_id):
-    try:
-        task = Task.objects.get(id=task_id)
-        
-        # add to history
+        # Dodajemy wpis do historii przed usunięciem
         TaskHistory.objects.create(
             task_id=task.id,
             name=task.name,
             description=task.description,
             assigned_user=task.assigned_user,
             created_at=task.created_at,
-            updated_at=timezone.now(),
+            updated_at=timezone.now()
         )
-        
         task.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
-    except ObjectDoesNotExist:
-        return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def post(self, request, task_id):
+        # Jeśli metoda POST ma działać jak aktualizacja, przekierowujemy do PUT
+        return self.put(request, task_id)
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def get_all_tasks(request):
-    try:
-        tasks = Task.objects.all()
-        serializer = TaskSerializer(tasks, many=True)
-        return Response(serializer.data)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def get_task(request, task_id):
-    try:
-        task = Task.objects.get(id=task_id)
-        serializer = TaskSerializer(task)
-        return Response(serializer.data)
-    except ObjectDoesNotExist:
-        return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+class TaskDeleteView(APIView):
+    """
+    Alternatywny widok do usuwania zadania (może być użyty zamiast metody DELETE w TaskEditView).
+    """
+    permission_classes = [IsAuthenticated]
 
-##############
-####USER######
-##############
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def get_all_users(request):
-    try:
-        users = User.objects.all()
-        serializer = UserSerializer(users, many=True)
-        return Response(serializer.data)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    def delete(self, request, task_id):
+        try:
+            task = Task.objects.get(id=task_id)
+        except Task.DoesNotExist:
+            return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        TaskHistory.objects.create(
+            task_id=task.id,
+            name=task.name,
+            description=task.description,
+            assigned_user=task.assigned_user,
+            created_at=task.created_at,
+            updated_at=timezone.now()
+        )
+        task.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def login_user(request):
-    try:
+
+class TaskListView(ListAPIView):
+    """
+    Zwraca wszystkie zadania.
+    """
+    permission_classes = [AllowAny]
+    queryset = Task.objects.all()
+    serializer_class = TaskSerializer
+
+
+class TaskDetailView(RetrieveAPIView):
+    """
+    Zwraca szczegóły konkretnego zadania.
+    """
+    permission_classes = [AllowAny]
+    queryset = Task.objects.all()
+    serializer_class = TaskSerializer
+    lookup_field = 'id'
+    lookup_url_kwarg = 'task_id'
+
+
+# ===== USER VIEWS =====
+
+class UserListView(ListAPIView):
+    """
+    Zwraca listę wszystkich użytkowników.
+    """
+    permission_classes = [AllowAny]
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+
+
+class LoginUserView(APIView):
+    """
+    Logowanie użytkownika i zwrócenie tokenów.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
         username = request.data.get('name')
         password = request.data.get('password')
         try:
@@ -186,30 +206,29 @@ def login_user(request):
                 return Response({'error': 'Invalid password'}, status=status.HTTP_401_UNAUTHORIZED)
         except User.DoesNotExist:
             return Response({'error': 'User does not exist'}, status=status.HTTP_404_NOT_FOUND)
-
-        refresh = RefreshToken.for_user(user)
         
+        refresh = RefreshToken.for_user(user)
         return Response({
             'refresh': str(refresh),
             'access': str(refresh.access_token),
             'user_id': user.id,
-            'name': user.name
+            'name': user.username
         })
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def register_user(request):
-    try:
+
+class RegisterUserView(APIView):
+    """
+    Rejestracja nowego użytkownika.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
         data = request.data.copy()
-
         if User.objects.filter(username=data.get('username')).exists():
             return Response({'error': 'Username already exists'}, status=status.HTTP_400_BAD_REQUEST)
-
         if User.objects.filter(email=data.get('email')).exists():
             return Response({'error': 'Email already exists'}, status=status.HTTP_400_BAD_REQUEST)
-
+        
         serializer = UserSerializer(data=data)
         if serializer.is_valid():
             user = serializer.save()
@@ -221,7 +240,4 @@ def register_user(request):
                 'user_id': user.id,
                 'name': user.username
             }, status=status.HTTP_201_CREATED)
-        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
